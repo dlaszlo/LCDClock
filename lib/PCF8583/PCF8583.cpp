@@ -49,11 +49,12 @@ PCF8583::PCF8583(int device_address)
 	hour = 0;
 	day = 0;
 	year = 0;
-	year_base = 0;
 	month = 0;
 	alarm_enabled = 0;
 	alarm_hour = 0;
 	alarm_minute = 0;
+	min_temp = 0;
+	max_temp = 0;
 }
 
 void PCF8583::get_time()
@@ -77,10 +78,10 @@ void PCF8583::get_time()
 	Wire.write(0x10);
 	Wire.endTransmission();
 	Wire.requestFrom(address, 2);
-	year_base = Wire.read();
-	year_base = year_base << 8;
-	year_base = year_base | Wire.read();
-	year = year + year_base;
+	int yb = Wire.read();
+	yb = yb << 8;
+	yb = yb | Wire.read();
+	year = year + yb;
 }
 
 void PCF8583::set_time()
@@ -103,11 +104,44 @@ void PCF8583::set_time()
 
 	Wire.beginTransmission(address);
 	Wire.write(0x10);
-	year_base = year - year % 4;
-	Wire.write(year_base >> 8);
-	Wire.write(year_base & 0x00ff);
+	int yb = year - year % 4;
+	Wire.write(yb >> 8);
+	Wire.write(yb & 0x00ff);
 	Wire.endTransmission();
 	reset_alarm();
+}
+
+void PCF8583::set_minmax_temp()
+{
+	Wire.beginTransmission(address);
+	Wire.write(STATUS_REG);
+	Wire.write(HOLD_LAST_COUNT | STOP_COUNTING);
+	Wire.endTransmission();
+
+	Wire.beginTransmission(address);
+	Wire.write(0x12);
+	Wire.write(min_temp >> 8);
+	Wire.write(min_temp & 0x00ff);
+	Wire.write(max_temp >> 8);
+	Wire.write(max_temp & 0x00ff);
+	Wire.endTransmission();
+	reset_alarm();
+}
+
+void PCF8583::get_minmax_temp()
+{
+	Wire.beginTransmission(address);
+	Wire.write(0x12);
+	Wire.endTransmission();
+	Wire.requestFrom(address, 4);
+	int mt = Wire.read();
+	mt = mt << 8;
+	mt = mt | Wire.read();
+	min_temp = mt;
+	mt = Wire.read();
+	mt = mt << 8;
+	mt = mt | Wire.read();
+	max_temp = mt;
 }
 
 void PCF8583::get_alarm_time()

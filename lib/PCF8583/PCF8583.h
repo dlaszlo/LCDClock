@@ -63,16 +63,19 @@ public:
 	int day;
 	int month;
 	int year;
-	int year_base;
 
 	int alarm_enabled;
 	int alarm_hour;
 	int alarm_minute;
+	int min_temp;
+	int max_temp;
 
 	PCF8583(int device_address);
 	void prepare_time();
 	void get_time();
 	void set_time();
+	void set_minmax_temp();
+	void get_minmax_temp();
 	void prepare_alarm_time();
 	void get_alarm_time();
 	void set_alarm_time();

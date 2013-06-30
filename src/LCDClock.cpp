@@ -9,14 +9,18 @@
 #define PIN_BACKLIGHT 13
 #define PIN_IR 8
 #define PIN_ONE_WIRE_BUS 9
-#define PIN_BEEP 7
+#define PIN_COOLER 7
 
 #define PCF8583_ADDRESS 0x0a0
 
 #define MODE_NORMAL 0
 #define MODE_SET_TIME 1
-#define MODE_SET_ALARM 2
-#define MODE_ALARM 3
+#define MODE_SET_TEMP 2
+
+#define COOLER_MODE_AUTO0 0
+#define COOLER_MODE_ON 1
+#define COOLER_MODE_AUTO1 2
+#define COOLER_MODE_OFF 3
 
 #define TRUE 1
 #define FALSE 0
@@ -31,15 +35,13 @@ DallasTemperature sensors(&oneWire);
 DeviceAddress thermometer;
 PCF8583 pcf8583(PCF8583_ADDRESS);
 
-const char * months[] =
-{ "jan", "feb", "már", "ápr", "máj", "jún", "júl", "aug", "sze", "okt", "nov",
-		"dec" };
-
+volatile uint8_t cooler = 0;
+volatile uint8_t cooler_mode = 0;
+volatile uint8_t sleep_mode = 0;
 volatile uint8_t mode = 0;
 volatile uint8_t set_field = 0;
+volatile uint8_t edit_time = 0;
 volatile uint8_t ir_rec = 0;
-volatile uint32_t alarm_start = 0;
-volatile uint32_t alarm_stop = 0;
 
 void setup()
 {
@@ -48,75 +50,114 @@ void setup()
 	pinMode(A3, INPUT);
 	digitalWrite(A3, HIGH);
 
-	irrecv.enableIRIn();
-
+	lcd.clearBuffer();
+	lcd.center(0, "akvárium hûtés");
+	lcd.center(1, "verzió: 1.0");
+	lcd.show();
+	delay(500);
 	sensors.getAddress(thermometer, 0);
+	irrecv.enableIRIn();
+	delay(500);
 
-	pcf8583.set_alarm_time();
-	pcf8583.reset_alarm();
 	pcf8583.get_time();
-	if (pcf8583.year == 0)
+	if (pcf8583.year > 2030 || pcf8583.year < 2000)
 	{
 		pcf8583.year = 2013;
 		pcf8583.set_time();
 	}
-	pinMode(PIN_BEEP, OUTPUT);
-	digitalWrite(PIN_BEEP, LOW);
+	pcf8583.get_minmax_temp();
+	if (pcf8583.min_temp > 320 || pcf8583.min_temp < 200
+			|| pcf8583.max_temp > 320 || pcf8583.max_temp < 200)
+	{
+		pcf8583.min_temp = 250;
+		pcf8583.max_temp = 280;
+		pcf8583.set_minmax_temp();
+	}
+
+	cooler = 0;
+	pinMode(PIN_COOLER, OUTPUT);
+	digitalWrite(PIN_COOLER, LOW);
 }
 
 void loop()
 {
-
-	int alarm = !digitalRead(A3);
-	if (alarm)
-	{
-		uint32_t now = millis();
-		if (alarm_start == 0)
-		{
-			alarm_start = now;
-			alarm_stop = now + 5000;
-		}
-		if (now > alarm_stop)
-		{
-			alarm_start = 0;
-			alarm_stop = 0;
-			pcf8583.reset_alarm();
-			digitalWrite(PIN_BEEP, LOW);
-		}
-		else
-		{
-			uint32_t beep = (now - alarm_start) >> 9;
-			digitalWrite(PIN_BEEP, (beep & 1) ? LOW : HIGH);
-		}
-	}
-	else
-	{
-		alarm_start = 0;
-		alarm_stop = 0;
-		digitalWrite(PIN_BEEP, LOW);
-	}
 
 	char txt[17] = "";
 	char temp[17] = "";
 
 	lcd.clearBuffer();
 
+	if (!edit_time)
+	{
+		pcf8583.get_time();
+	}
+
 	if (mode == MODE_NORMAL)
 	{
+		pcf8583.get_minmax_temp();
 		// elsõ sor
-		pcf8583.get_time();
 		memset(txt, 0, 17);
-		sprintf(txt, "%04d.%s.%02d.", pcf8583.year, months[pcf8583.month - 1],
+		sprintf(txt, "%04d.%02d.%02d", pcf8583.year, pcf8583.month,
 				pcf8583.day);
-		lcd.center(0, txt);
+		lcd.setText(0, 0, txt);
 
 		// második sor
 		memset(txt, 0, 17);
 		sprintf(txt, "%02d:%02d:%02d", pcf8583.hour, pcf8583.minute,
 				pcf8583.second);
 		lcd.setText(0, 1, txt);
+
 		sensors.requestTemperatures();
 		float tf = sensors.getTempC(thermometer);
+
+		if (pcf8583.hour < 7 || pcf8583.hour > 19)
+		{
+			sleep_mode = 1;
+		}
+		else
+		{
+			sleep_mode = 0;
+		}
+		switch (cooler_mode)
+		{
+		case COOLER_MODE_AUTO0:
+		case COOLER_MODE_AUTO1:
+			if (sleep_mode)
+			{
+				cooler = 0;
+				lcd.right(0, "alvás");
+			}
+			else
+			{
+				float mintempf = pcf8583.min_temp / (float) 10;
+				float maxtempf = pcf8583.max_temp / (float) 10;
+				lcd.right(0, " auto");
+				if (mintempf + 0.5 >= maxtempf)
+				{
+					cooler = 0;
+					lcd.right(0, " hiba");
+				}
+				else if (tf >= maxtempf)
+				{
+					cooler = 1;
+				}
+				else if (tf < mintempf)
+				{
+					cooler = 0;
+				}
+			}
+			break;
+		case COOLER_MODE_ON:
+			cooler = 1;
+			lcd.right(0, "   be");
+			break;
+		case COOLER_MODE_OFF:
+			cooler = 0;
+			lcd.right(0, "   ki");
+			break;
+		}
+		digitalWrite(PIN_COOLER, cooler ? HIGH : LOW);
+
 		memset(txt, 0, 17);
 		memset(temp, 0, 17);
 		dtostrf(tf, 1, 1, temp);
@@ -128,7 +169,7 @@ void loop()
 	{
 		// elsõ sor
 		memset(txt, 0, 17);
-		sprintf(txt, "%04d.%s.%02d.", pcf8583.year, months[pcf8583.month - 1],
+		sprintf(txt, "%04d.%02d.%02d", pcf8583.year, pcf8583.month,
 				pcf8583.day);
 		lcd.center(0, txt);
 
@@ -140,11 +181,11 @@ void loop()
 		switch (set_field)
 		{
 		case 0:
-			lcd.setText(1, 0, LCD_ARROW_RIGHT);
-			lcd.setText(6, 0, LCD_ARROW_LEFT);
+			lcd.setText(2, 0, LCD_ARROW_RIGHT);
+			lcd.setText(7, 0, LCD_ARROW_LEFT);
 			break;
 		case 1:
-			lcd.setText(6, 0, LCD_ARROW_RIGHT);
+			lcd.setText(7, 0, LCD_ARROW_RIGHT);
 			lcd.setText(10, 0, LCD_ARROW_LEFT);
 			break;
 		case 2:
@@ -165,31 +206,36 @@ void loop()
 			break;
 		}
 	}
-	else if (mode == MODE_SET_ALARM)
+	else if (mode == MODE_SET_TEMP)
 	{
-		// elsõ sor
-		lcd.center(0, "ébresztõ");
-
-		// második sor
+		float mintempf = pcf8583.min_temp / (float) 10;
+		float maxtempf = pcf8583.max_temp / (float) 10;
 		memset(txt, 0, 17);
-		sprintf(txt, "%02d:%02d", pcf8583.alarm_hour, pcf8583.alarm_minute);
+		lcd.setText(0, 0, "   be      ki");
 
-		lcd.center(1, txt);
+		memset(temp, 0, 17);
+		dtostrf(maxtempf, 1, 1, temp);
+		sprintf(txt, "%s C", temp);
+		lcd.setText(1, 1, txt);
+		lcd.setText(5, 1, LCD_DEGREE);
+
+		memset(temp, 0, 17);
+		dtostrf(mintempf, 1, 1, temp);
+		sprintf(txt, "%s C", temp);
+		lcd.setText(9, 1, txt);
+		lcd.setText(13, 1, LCD_DEGREE);
+
 		switch (set_field)
 		{
 		case 0:
-			lcd.setText(4, 1, LCD_ARROW_RIGHT);
+			lcd.setText(0, 1, LCD_ARROW_RIGHT);
 			lcd.setText(7, 1, LCD_ARROW_LEFT);
 			break;
 		case 1:
-			lcd.setText(7, 1, LCD_ARROW_RIGHT);
-			lcd.setText(10, 1, LCD_ARROW_LEFT);
+			lcd.setText(8, 1, LCD_ARROW_RIGHT);
+			lcd.setText(15, 1, LCD_ARROW_LEFT);
 			break;
 		}
-	}
-	if (pcf8583.alarm_enabled)
-	{
-		lcd.setText(0, 0, LCD_ALARM);
 	}
 
 	lcd.show();
@@ -207,6 +253,7 @@ void loop()
 			case 0x0510: // fel
 				if (mode == MODE_SET_TIME)
 				{
+					edit_time = 1;
 					switch (set_field)
 					{
 					case 0:
@@ -230,23 +277,23 @@ void loop()
 					}
 					pcf8583.prepare_time();
 				}
-				else if (mode == MODE_SET_ALARM)
+				else if (mode == MODE_SET_TEMP)
 				{
 					switch (set_field)
 					{
 					case 0:
-						pcf8583.alarm_hour++;
+						pcf8583.max_temp++;
 						break;
 					case 1:
-						pcf8583.alarm_minute++;
+						pcf8583.min_temp++;
 						break;
 					}
-					pcf8583.prepare_alarm_time();
 				}
 				break;
 			case 0x0511: // le
 				if (mode == MODE_SET_TIME)
 				{
+					edit_time = 1;
 					switch (set_field)
 					{
 					case 0:
@@ -270,18 +317,17 @@ void loop()
 					}
 					pcf8583.prepare_time();
 				}
-				else if (mode == MODE_SET_ALARM)
+				else if (mode == MODE_SET_TEMP)
 				{
 					switch (set_field)
 					{
 					case 0:
-						pcf8583.alarm_hour--;
+						pcf8583.max_temp--;
 						break;
 					case 1:
-						pcf8583.alarm_minute--;
+						pcf8583.min_temp--;
 						break;
 					}
-					pcf8583.prepare_alarm_time();
 				}
 				break;
 			case 0x0520: // jobbra
@@ -293,7 +339,7 @@ void loop()
 						set_field = 0;
 					}
 				}
-				else if (mode == MODE_SET_ALARM)
+				else if (mode == MODE_SET_TEMP)
 				{
 					set_field++;
 					if (set_field > 1)
@@ -311,7 +357,7 @@ void loop()
 						set_field = 5;
 					}
 				}
-				else if (mode == MODE_SET_ALARM)
+				else if (mode == MODE_SET_TEMP)
 				{
 					set_field--;
 					if (set_field < 0)
@@ -321,22 +367,26 @@ void loop()
 				}
 				break;
 			case 0x0532: // shift
+				cooler_mode++;
+				if (cooler_mode > 3)
+				{
+					cooler_mode = 0;
+				}
 				break;
 			case 0x0534: // sleep
-				pcf8583.alarm_enabled ^= 1;
-				pcf8583.reset_alarm();
-				break;
-			case 0x050c: // edit
-				if (mode == MODE_NORMAL)
+				if (mode == MODE_SET_TIME)
 				{
-					mode = MODE_SET_ALARM;
+					edit_time = 0;
 					set_field = 0;
+					mode = MODE_SET_TEMP;
 				}
-				else if (mode == MODE_SET_ALARM)
+				else if (mode == MODE_SET_TEMP)
 				{
-					pcf8583.set_alarm_time();
+					set_field = 0;
 					mode = MODE_NORMAL;
 				}
+				break;
+			case 0x050c: // edit
 				break;
 			case 0x0517: // enter
 				if (mode == MODE_NORMAL)
@@ -346,7 +396,18 @@ void loop()
 				}
 				else if (mode == MODE_SET_TIME)
 				{
-					pcf8583.set_time();
+					if (edit_time)
+					{
+						pcf8583.set_time();
+					}
+					edit_time = 0;
+					set_field = 0;
+					mode = MODE_SET_TEMP;
+				}
+				else if (mode == MODE_SET_TEMP)
+				{
+					pcf8583.set_minmax_temp();
+					set_field = 0;
 					mode = MODE_NORMAL;
 				}
 				break;
